@@ -46,6 +46,11 @@
 #endif
 
 #include <linux/smb329.h>
+//=======
+/*#include <mach/htc_battery.h>*/
+//#include "smd_private.h"
+
+//>>>>>>> 0059e01... add amss 6355 support
 
 static struct wake_lock vbus_wake_lock;
 
@@ -226,6 +231,7 @@ static int htc_is_cable_in(void)
 {
 	if (!htc_batt_info.update_time) {
 		BATT_ERR("%s: battery driver hasn't been initialized yet.", __func__);
+
 		return -EINVAL;
 	}
 	return (htc_batt_info.rep.charging_source != CHARGER_BATTERY) ? 1 : 0;
@@ -299,6 +305,39 @@ unsigned int batt_get_status(enum power_supply_property psp)
 	return val.intval;
 }
 
+/**
+ * htc_power_policy - check if it obeys our policy
+ * return 0 for no errors, to indicate it follows policy.
+ * non zero otherwise.
+ **/
+static int __htc_power_policy(void)
+{
+	if (!zcharge_enabled)
+		return 0;
+
+	if (htc_is_cable_in())
+		return 1;
+
+	return 0;
+}
+
+/*
+ * Jay, 7/1/09'
+ */
+static int htc_power_policy(struct notifier_block *nfb,                 
+		unsigned long action, void *ignored)                              
+{       
+	int rc;                                                                         
+	switch (action) {
+	case BATT_EVENT_SUSPEND:
+		rc = __htc_power_policy();
+		if (rc)
+			return NOTIFY_STOP;
+		else
+			return NOTIFY_OK;
+	}
+	return NOTIFY_DONE;
+}                                                                                
 #if defined(CONFIG_DEBUG_FS)
 static int htc_battery_set_charging(enum batt_ctl_t ctl);
 static int batt_debug_set(void *data, u64 val)
@@ -923,6 +962,224 @@ static ssize_t htc_battery_show_batt_attr(struct device *dev,
 	return 0;
 }
 
+struct htc_batt_info_full {
+	u32 batt_id;
+	u32 batt_vol;
+	u32 batt_vol_last;
+	u32 batt_temp;
+	u32 batt_current;
+	u32 batt_current_last;
+	u32 batt_discharge_current;
+
+	u32 VREF_2;
+	u32 VREF;
+	u32 ADC4096_VREF;
+
+	u32 Rtemp;
+	s32  Temp;
+	s32  Temp_last;
+
+	u32 pd_M;
+	u32 MBAT_pd;
+	s32 I_MBAT;
+
+	u32 pd_temp;
+	u32 percent_last;
+	u32 percent_update;
+	u32 dis_percent;
+
+	u32 vbus;
+	u32 usbid;
+	u32 charging_source;
+
+	u32 MBAT_IN;
+	u32 full_bat;
+
+	u32 eval_current;
+	u32 eval_current_last;
+	u32 charging_enabled;
+
+	u32 timeout;
+	u32 fullcharge;
+	u32 level;
+	u32 delta;
+
+	u32 chg_time;
+	s32 level_change;
+	u32 sleep_timer_count;
+	u32 OT_led_on;
+	u32 overloading_charge;
+
+	u32 a2m_cable_type;
+	u32 reserve2;
+	u32 reserve3;
+	u32 reserve4;
+	u32 reserve5;
+};
+
+/* SMEM_BATT_INFO is allocated by A9 after first A2M RPC is sent. */
+static struct htc_batt_info_full *smem_batt_info;
+
+static int htc_get_batt_info_smem(struct battery_info_reply *buffer)
+{
+	if (!smem_batt_info) {
+		smem_batt_info = smem_alloc(SMEM_BATT_INFO,
+			sizeof(struct htc_batt_info_full));
+		if (!smem_batt_info) {
+			printk(KERN_ERR "battery SMEM allocate fail, "
+				"use RPC instead of\n");
+			return htc_get_batt_info(buffer);
+		}
+	}
+
+	if (!buffer)
+		return -EINVAL;
+
+	mutex_lock(&htc_batt_info.lock);
+	buffer->batt_id = smem_batt_info->batt_id;
+	buffer->batt_vol = smem_batt_info->batt_vol;
+	buffer->batt_temp = smem_batt_info->Temp;
+	buffer->batt_current = smem_batt_info->batt_current;
+	/* Fix issue that recharging percent drop to 99%. */
+	/* The level in SMEM is for A9 internal use,
+	 * always use value reported by M2A level update RPC. */
+#if 0
+	buffer->level 	= smem_batt_info->percent_update;
+#endif
+	/* Move the rules of charging_source to cable_status_update. */
+	/* buffer->charging_source 	= be32_to_cpu(smem_batt_info->charging_source); */
+	buffer->charging_enabled = smem_batt_info->charging_enabled;
+	buffer->full_bat = smem_batt_info->full_bat;
+	mutex_unlock(&htc_batt_info.lock);
+
+	BATT("SMEM_BATT: get_batt_info: batt_id=%d, batt_vol=%d, batt_temp=%d, "
+			"batt_current=%d, level=%d, charging_source=%d, "
+			"charging_enabled=%d, full_bat=%d",
+			buffer->batt_id, buffer->batt_vol, buffer->batt_temp,
+			buffer->batt_current, buffer->level, buffer->charging_source,
+			buffer->charging_enabled, buffer->full_bat);
+
+	return 0;
+}
+
+static ssize_t htc_battery_show_smem(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	int len = 0;
+
+	if (!smem_batt_info) {
+		smem_batt_info = smem_alloc(SMEM_BATT_INFO,
+			sizeof(struct htc_batt_info_full));
+		if (!smem_batt_info) {
+			printk(KERN_ERR "Show SMEM: allocate fail\n");
+			return 0;
+		}
+	}
+
+	if (!strcmp(attr->attr.name, "smem_raw")) {
+		len = sizeof(struct htc_batt_info_full);
+		memcpy(buf, smem_batt_info, len);
+	} else if (!strcmp(attr->attr.name, "smem_text")) {
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+			"batt_id: %d\n"
+			"batt_vol: %d\n"
+			"batt_vol_last: %d\n"
+			"batt_temp: %d\n"
+			"batt_current: %d\n"
+			"batt_current_last: %d\n"
+			"batt_discharge_current: %d\n"
+			"VREF_2: %d\n"
+			"VREF: %d\n"
+			"ADC4096_VREF: %d\n"
+			"Rtemp: %d\n"
+			"Temp: %d\n"
+			"Temp_last: %d\n"
+			"pd_M: %d\n"
+			"MBAT_pd: %d\n"
+			"I_MBAT: %d\n"
+			"pd_temp: %d\n"
+			"percent_last: %d\n"
+			"percent_update: %d\n"
+			"dis_percent: %d\n"
+			"vbus: %d\n"
+			"usbid: %d\n"
+			"charging_source: %d\n"
+			"MBAT_IN: %d\n"
+			"full_bat: %d\n"
+			"eval_current: %d\n"
+			"eval_current_last: %d\n"
+			"charging_enabled: %d\n"
+			"timeout: %d\n"
+			"fullcharge: %d\n"
+			"level: %d\n"
+			"delta: %d\n"
+			"chg_time: %d\n"
+			"level_change: %d\n"
+			"sleep_timer_count: %d\n"
+			"OT_led_on: %d\n"
+			"overloading_charge: %d\n"
+			"a2m_cable_type: %d\n",
+			smem_batt_info->batt_id,
+			smem_batt_info->batt_vol,
+			smem_batt_info->batt_vol_last,
+			smem_batt_info->batt_temp,
+			smem_batt_info->batt_current,
+			smem_batt_info->batt_current_last,
+			smem_batt_info->batt_discharge_current,
+			smem_batt_info->VREF_2,
+			smem_batt_info->VREF,
+			smem_batt_info->ADC4096_VREF,
+			smem_batt_info->Rtemp,
+			smem_batt_info->Temp,
+			smem_batt_info->Temp_last,
+			smem_batt_info->pd_M,
+			smem_batt_info->MBAT_pd,
+			smem_batt_info->I_MBAT,
+			smem_batt_info->pd_temp,
+			smem_batt_info->percent_last,
+			smem_batt_info->percent_update,
+			smem_batt_info->dis_percent,
+			smem_batt_info->vbus,
+			smem_batt_info->usbid,
+			smem_batt_info->charging_source,
+			smem_batt_info->MBAT_IN,
+			smem_batt_info->full_bat,
+			smem_batt_info->eval_current,
+			smem_batt_info->eval_current_last,
+			smem_batt_info->charging_enabled,
+			smem_batt_info->timeout,
+			smem_batt_info->fullcharge,
+			smem_batt_info->level,
+			smem_batt_info->delta,
+			smem_batt_info->chg_time,
+			smem_batt_info->level_change,
+			smem_batt_info->sleep_timer_count,
+			smem_batt_info->OT_led_on,
+			smem_batt_info->overloading_charge,
+			smem_batt_info->a2m_cable_type);
+	}
+
+	return len;
+}
+
+static int htc_set_smem_cable_type(u32 cable_type)
+{
+	if (!smem_batt_info) {
+		smem_batt_info = smem_alloc(SMEM_BATT_INFO,
+				sizeof(struct htc_batt_info_full));
+		if (!smem_batt_info) {
+			printk(KERN_ERR "Update SMEM: allocate fail\n");
+			return -EINVAL;
+		}
+	}
+
+	smem_batt_info->a2m_cable_type = cable_type;
+	BATT("Update SMEM: cable type %d\n", cable_type);
+
+	return 0;
+}
+
 /* -------------------------------------------------------------------------- */
 static int htc_power_get_property(struct power_supply *psy,
 				    enum power_supply_property psp,
@@ -1188,7 +1445,6 @@ static ssize_t htc_battery_charger_switch(struct device *dev,
 		return rc;
 	return count;
 }
-
 
 static ssize_t htc_battery_set_full_level(struct device *dev,
 				     struct device_attribute *attr,

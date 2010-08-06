@@ -21,6 +21,7 @@
 #include <linux/sched.h>
 
 #include <mach/msm_rpcrouter.h>
+#include <mach/msm_rpc_version.h>
 
 #define PM_LIBPROG	  0x30000061
 #if defined(CONFIG_ARCH_MSM7X30)
