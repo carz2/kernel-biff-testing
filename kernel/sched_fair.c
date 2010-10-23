@@ -301,9 +301,9 @@ static inline s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	return se->vruntime - cfs_rq->min_vruntime;
 }
 
-static void update_min_vruntime(struct cfs_rq *cfs_rq)
+static void update_min_vruntime(struct cfs_rq *cfs_rq, unsigned long delta_exec)
 {
-	u64 vruntime = cfs_rq->min_vruntime;
+	u64 vruntime = cfs_rq->min_vruntime, new_vruntime;
 
 	if (cfs_rq->curr)
 		vruntime = cfs_rq->curr->vruntime;
@@ -319,7 +319,12 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 			vruntime = min_vruntime(vruntime, se->vruntime);
 	}
 
-	cfs_rq->min_vruntime = max_vruntime(cfs_rq->min_vruntime, vruntime);
+	new_vruntime = cfs_rq->min_vruntime;
+	if (sched_feat(DYN_MIN_VRUNTIME) && delta_exec)
+		new_vruntime += calc_delta_mine(delta_exec, NICE_0_LOAD,
+						&cfs_rq->load);
+
+	cfs_rq->min_vruntime = max_vruntime(new_vruntime, vruntime);
 }
 
 /*
@@ -512,7 +517,7 @@ __update_curr(struct cfs_rq *cfs_rq, struct sched_entity *curr,
 	delta_exec_weighted = calc_delta_fair(delta_exec, curr);
 
 	curr->vruntime += delta_exec_weighted;
-	update_min_vruntime(cfs_rq);
+	update_min_vruntime(cfs_rq, delta_exec);
 }
 
 static void update_curr(struct cfs_rq *cfs_rq)
@@ -717,7 +722,7 @@ static void check_spread(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	if (d < 0)
 		d = -d;
 
-	if (d > 3*sysctl_sched_latency)
+	if (d > 3*cfs_rq->nr_running*sysctl_sched_latency)
 		schedstat_inc(cfs_rq, nr_spread_over);
 #endif
 }
@@ -761,9 +766,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	}
 
 	/* ensure we never gain time by being placed backwards. */
-	vruntime = max_vruntime(se->vruntime, vruntime);
-
-	se->vruntime = vruntime;
+	se->vruntime = max_vruntime(se->vruntime, vruntime);
 }
 
 #define ENQUEUE_WAKEUP	1
@@ -818,6 +821,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int sleep)
 	 * Update run-time statistics of the 'current'.
 	 */
 	update_curr(cfs_rq);
+	check_spread(cfs_rq, se);
 
 	update_stats_dequeue(cfs_rq, se);
 	if (sleep) {
@@ -838,7 +842,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int sleep)
 	if (se != cfs_rq->curr)
 		__dequeue_entity(cfs_rq, se);
 	account_entity_dequeue(cfs_rq, se);
-	update_min_vruntime(cfs_rq);
+	update_min_vruntime(cfs_rq, 0);
 
 	/*
 	 * Normalize the entity after updating the min_vruntime because the
@@ -884,7 +888,7 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		struct sched_entity *se = __pick_next_entity(cfs_rq);
 		s64 delta = curr->vruntime - se->vruntime;
 
-		if (delta > ideal_runtime)
+		if (delta > calc_delta_fair(ideal_runtime, curr))
 			resched_task(rq_of(cfs_rq)->curr);
 	}
 }
@@ -947,11 +951,9 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
 	 * If still on the runqueue then deactivate_task()
 	 * was not called and update_curr() has to be done:
 	 */
-	if (prev->on_rq)
-		update_curr(cfs_rq);
-
-	check_spread(cfs_rq, prev);
 	if (prev->on_rq) {
+		update_curr(cfs_rq);
+		check_spread(cfs_rq, prev);
 		update_stats_wait_start(cfs_rq, prev);
 		/* Put 'current' back into the tree. */
 		__enqueue_entity(cfs_rq, prev);
