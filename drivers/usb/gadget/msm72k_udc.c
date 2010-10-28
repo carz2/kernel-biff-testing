@@ -1242,10 +1242,6 @@ static void usb_do_work(struct work_struct *w)
 #ifdef CONFIG_ARCH_MSM_SCORPION
 				usb_phy_reset(ui);
 #endif
-				/* clear for DS as well */
-#ifdef CONFIG_ARCH_MSM_ARM11
-				usb_phy_reset(ui);
-#endif
 
 				/* power down phy, clock down usb */
 				spin_lock_irqsave(&ui->lock, iflags);
