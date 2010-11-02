@@ -1448,6 +1448,7 @@ wl_iw_send_priv_event(
 int
 wl_control_wl_start(struct net_device *dev)
 {
+	wl_iw_t *iw;
 	int ret = 0;
 	wl_iw_t *iw;
 
@@ -1459,11 +1460,6 @@ wl_control_wl_start(struct net_device *dev)
 	}
 
 	iw = *(wl_iw_t **)netdev_priv(dev);
-
-	if (!iw) {
-		WL_ERROR(("%s: wl is null\n", __FUNCTION__));
-		return -1;
-	}
 	dhd_os_start_lock(iw->pub);
 
 	if (g_onoff == G_WLAN_SET_OFF) {
@@ -1496,8 +1492,8 @@ wl_iw_control_wl_off(
 	struct iw_request_info *info
 )
 {
-	int ret = 0;
 	wl_iw_t *iw;
+	int ret = 0;
 
 	WL_TRACE(("Enter %s\n", __FUNCTION__));
 
@@ -1507,10 +1503,6 @@ wl_iw_control_wl_off(
 	}
 
 	iw = *(wl_iw_t **)netdev_priv(dev);
-	if (!iw) {
-		WL_ERROR(("%s: dev is null\n", __FUNCTION__));
-		return -1;
-	}
 	dhd_os_start_lock(iw->pub);
 
 #ifdef SOFTAP
