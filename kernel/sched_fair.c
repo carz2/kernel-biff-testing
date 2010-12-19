@@ -54,13 +54,13 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling
  * Minimal preemption granularity for CPU-bound tasks:
  * (default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
-unsigned int sysctl_sched_min_granularity = 750000ULL;
-unsigned int normalized_sysctl_sched_min_granularity = 750000ULL;
+unsigned int sysctl_sched_min_granularity = 1000000ULL;
+unsigned int normalized_sysctl_sched_min_granularity = 1000000ULL;
 
 /*
  * is kept at sysctl_sched_latency / sysctl_sched_min_granularity
  */
-static unsigned int sched_nr_latency = 8;
+static unsigned int sched_nr_latency = 5;
 
 /*
  * After fork, child runs first. If set to 0 (default) then
@@ -3691,26 +3691,24 @@ static void set_curr_task_fair(struct rq *rq)
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-static void task_move_group_fair(struct task_struct *p, int on_rq)
+static void moved_group_fair(struct task_struct *p, int on_rq)
 {
-   /*
-    * If the task was not on the rq at the time of this cgroup movement
-    * it must have been asleep, sleeping tasks keep their ->vruntime
-    * absolute on their old rq until wakeup (needed for the fair sleeper
-    * bonus in place_entity()).
-    *
-    * If it was on the rq, we've just 'preempted' it, which does convert
-    * ->vruntime to a relative base.
-    *
-    * Make sure both cases convert their relative position when migrating
-    * to another cgroup's rq. This does somewhat interfere with the
-    * fair sleeper stuff for the first placement, but who cares.
-    */
+	struct cfs_rq *cfs_rq = task_cfs_rq(p);
+	struct sched_entity *se = &p->se;
+
+	update_curr(cfs_rq);
 	if (!on_rq)
-		p->se.vruntime -= cfs_rq_of(&p->se)->min_vruntime;
-	set_task_rq(p, task_cpu(p));
+		se->vruntime += cfs_rq->min_vruntime;
+}
+
+static void prep_move_group_fair(struct task_struct *p, int on_rq)
+{
+	struct cfs_rq *cfs_rq = task_cfs_rq(p);
+	struct sched_entity *se = &p->se;
+
+	/* normalize the runtime of a sleeping task before moving it */
 	if (!on_rq)
-	p->se.vruntime += cfs_rq_of(&p->se)->min_vruntime;
+		se->vruntime -= cfs_rq->min_vruntime;
 }
 #endif
 
@@ -3762,7 +3760,8 @@ static const struct sched_class fair_sched_class = {
 	.get_rr_interval	= get_rr_interval_fair,
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-	.task_move_group  = task_move_group_fair,
+	.moved_group		= moved_group_fair,
+	.prep_move_group	= prep_move_group_fair,
 #endif
 };
 

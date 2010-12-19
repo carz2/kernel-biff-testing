@@ -29,7 +29,6 @@
 #include <linux/poll.h>
 #include <linux/mm.h>
 #include <linux/bitops.h>
-#include <linux/pm_qos_params.h>
 
 #define snd_pcm_substream_chip(substream) ((substream)->private_data)
 #define snd_pcm_chip(pcm) ((pcm)->private_data)
@@ -366,7 +365,7 @@ struct snd_pcm_substream {
 	int number;
 	char name[32];			/* substream name */
 	int stream;			/* stream (direction) */
-	struct pm_qos_request_list latency_pm_qos_req; /* pm_qos request */
+	char latency_id[20];		/* latency identifier */
 	size_t buffer_bytes_max;	/* limit ring buffer size */
 	struct snd_dma_buffer dma_buffer;
 	unsigned int dma_buf_id;
