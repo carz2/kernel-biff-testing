@@ -26,6 +26,7 @@ struct msm_adsp_ops {
 	 */
 	void (*event)(void *driver_data, unsigned id, size_t len,
 		      void (*getevent)(void *ptr, size_t len));
+	void (*modem_event) (void *driver_data, uint32_t image);
 };
 
 /* Get, Put, Enable, and Disable are synchronous and must only

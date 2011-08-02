@@ -138,6 +138,7 @@ choice
          
 	config MSM_AMSS_VERSION_6355
 		bool "6.3.55"
+		select MSM_LEGACY_7X00A_AMSS
 endchoice
 
 menu "Qualcomm MSM Board Type"

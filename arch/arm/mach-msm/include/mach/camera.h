@@ -40,22 +40,11 @@ enum vfe_resp_msg {
 	VFE_EVENT,
 	VFE_MSG_GENERAL,
 	VFE_MSG_SNAPSHOT,
-#ifndef CONFIG_720P_CAMERA
 	VFE_MSG_OUTPUT1,
 	VFE_MSG_OUTPUT2,
-#else
-	VFE_MSG_OUTPUT_P,   /* preview (continuous mode ) */
-	VFE_MSG_OUTPUT_T,   /* thumbnail (snapshot mode )*/
-	VFE_MSG_OUTPUT_S,   /* main image (snapshot mode )*/
-	VFE_MSG_OUTPUT_V,   /* video   (continuous mode ) */
-#endif
 	VFE_MSG_STATS_AF,
 	VFE_MSG_STATS_WE,
 };
-
-#define VFE31_OUTPUT_MODE_PT (0x1 << 0)
-#define VFE31_OUTPUT_MODE_S (0x1 << 1)
-#define VFE31_OUTPUT_MODE_V (0x1 << 2)
 
 struct msm_vfe_phy_info {
 	uint32_t sbuf_phy;
@@ -215,9 +204,7 @@ struct msm_pmem_region {
 struct axidata {
 	uint32_t bufnum1;
 	uint32_t bufnum2;
-//#ifdef CONFIG_720P_CAMERA
-	uint32_t bufnum3;
-//#endif
+
 	struct msm_pmem_region *region;
 };
 
@@ -265,16 +252,6 @@ enum msm_camio_clk_type {
 	CAMIO_MDC_CLK,
 	CAMIO_VFE_CLK,
 	CAMIO_VFE_AXI_CLK,
-//#ifdef CONFIG_MSM_CAMERA_7X30
-	CAMIO_VFE_CLK_FOR_MIPI_2_LANE,
-	CAMIO_VFE_CAMIF_CLK,
-	CAMIO_VFE_PBDG_CLK,
-	CAMIO_CAM_MCLK_CLK,
-	CAMIO_CAMIF_PAD_PBDG_CLK,
-	CAMIO_CSI_CLK,
-	CAMIO_CSI_VFE_CLK,
-	CAMIO_CSI_PCLK,
-//#endif
 	CAMIO_MAX_CLK
 };
 

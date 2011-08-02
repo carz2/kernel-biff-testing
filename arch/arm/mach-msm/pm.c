@@ -82,6 +82,7 @@ module_param_named(idle_spin_time, msm_pm_idle_spin_time, int, S_IRUGO | S_IWUSR
 #endif
 
 
+#if defined(CONFIG_ARCH_QSD8X50)
 #define DEM_MASTER_BITS_PER_CPU             6
 
 /* Power Master State Bits - Per CPU */
@@ -110,18 +111,17 @@ module_param_named(idle_spin_time, msm_pm_idle_spin_time, int, S_IRUGO | S_IWUSR
 #define DEM_SLAVE_SMSM_RESET                (0x0100)
 #define DEM_SLAVE_SMSM_PWRC_SUSPEND         (0x0200)
 
-#ifndef CONFIG_ARCH_MSM_SCORPION
-#define PM_SMSM_WRITE_STATE	SMSM_STATE_APPS
-#define PM_SMSM_READ_STATE	SMSM_STATE_MODEM
-
-#define PM_SMSM_WRITE_RUN	SMSM_RUN
-#define PM_SMSM_READ_RUN	SMSM_RUN
-#else
 #define PM_SMSM_WRITE_STATE	SMSM_STATE_APPS_DEM
 #define PM_SMSM_READ_STATE	SMSM_STATE_POWER_MASTER_DEM
 
 #define PM_SMSM_WRITE_RUN	DEM_SLAVE_SMSM_RUN
 #define PM_SMSM_READ_RUN	DEM_MASTER_SMSM_RUN
+#else
+#define PM_SMSM_WRITE_STATE     SMSM_STATE_APPS
+#define PM_SMSM_READ_STATE      SMSM_STATE_MODEM
+
+#define PM_SMSM_WRITE_RUN       SMSM_RUN
+#define PM_SMSM_READ_RUN        SMSM_RUN
 #endif
 
 int msm_pm_collapse(void);
@@ -202,7 +202,7 @@ msm_pm_wait_state(uint32_t wait_all_set, uint32_t wait_all_clear,
 
 	for (i = 0; i < 100000; i++) {
 		state = smsm_get_state(PM_SMSM_READ_STATE);
-		if (((wait_all_set || wait_all_clear) &&
+		if (((wait_all_set || wait_all_clear) && 
 		     !(~state & wait_all_set) && !(state & wait_all_clear)) ||
 		    (state & wait_any_set) || (~state & wait_any_clear))
 			return 0;
@@ -470,7 +470,7 @@ static int msm_sleep(int sleep_mode, uint32_t sleep_delay, int from_idle)
 			printk(KERN_INFO "msm_sleep(): exit power collapse %ld"
 			       "\n", pm_saved_acpu_clk_rate);
 #if defined(CONFIG_ARCH_QSD8X50)
-    if (acpuclk_set_rate(pm_saved_acpu_clk_rate, 1) < 0)
+		if (acpuclk_set_rate(pm_saved_acpu_clk_rate, 1) < 0)
 #else
     if (acpuclk_set_rate(pm_saved_acpu_clk_rate,
       from_idle ? SETRATE_PC_IDLE : SETRATE_PC) < 0)
@@ -785,8 +785,8 @@ void msm_pm_set_max_sleep_time(int64_t max_sleep_time_ns)
 
 	if (msm_pm_debug_mask & MSM_PM_DEBUG_SUSPEND)
 		printk("%s: Requested %lldns (%lldbs), Giving %ubs\n",
-		       __func__, max_sleep_time_ns,
-		       max_sleep_time_bs,
+		       __func__, max_sleep_time_ns, 
+		       max_sleep_time_bs, 
 		       msm_pm_max_sleep_time);
 }
 EXPORT_SYMBOL(msm_pm_set_max_sleep_time);

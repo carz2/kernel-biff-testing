@@ -51,6 +51,7 @@ static inline void allow_suspend(void)
 #include <mach/msm_rpc_version.h>
 #include "adsp.h"
 
+
 static struct adsp_info adsp_info;
 static struct msm_rpc_endpoint *rpc_cb_server_client;
 static struct msm_adsp_module *adsp_modules;
@@ -96,15 +97,35 @@ static int32_t adsp_validate_module(uint32_t module_id)
 	return -ENXIO;
 }
 
+#if defined(CONFIG_ARCH_MSM7227)
+static int32_t adsp_validate_queue(uint32_t mod_id, unsigned q_idx,
+							uint32_t size)
+{
+	int32_t i;
+	struct adsp_rtos_mp_mtoa_init_info_type	*sptr;
+
+	sptr = adsp_info.init_info_ptr;
+	for (i = 0; i < sptr->mod_to_q_entries; i++)
+		if (mod_id == sptr->mod_to_q_tbl[i].module)
+			if (q_idx == sptr->mod_to_q_tbl[i].q_type) {
+				if (size <= sptr->mod_to_q_tbl[i].q_max_len)
+					return 0;
+				pr_info("adsp: q_idx: %d is not a valid queue \
+					 for module %x\n", q_idx, mod_id);
+				return -EINVAL;
+			}
+	pr_info("adsp: cmd_buf size is more than allowed size\n");
+	return -EINVAL;
+}
+#endif
+
 uint32_t adsp_get_module(struct adsp_info *info, uint32_t task)
 {
-	BUG_ON(current_image == -1UL);
 	return info->task_to_module[current_image][task];
 }
 
 uint32_t adsp_get_queue_offset(struct adsp_info *info, uint32_t queue_id)
 {
-	BUG_ON(current_image == -1UL);
 	return info->queue_offset[current_image][queue_id];
 }
 
@@ -113,46 +134,36 @@ static int rpc_adsp_rtos_app_to_modem(uint32_t cmd, uint32_t module,
 {
 	int rc;
 	struct rpc_adsp_rtos_app_to_modem_args_t rpc_req;
-	struct rpc_reply_hdr *rpc_rsp;
-
-	msm_rpc_setup_req(&rpc_req.hdr,
-			  RPC_ADSP_RTOS_ATOM_PROG,
-			  msm_rpc_get_vers(adsp_module->rpc_client),
-			  RPC_ADSP_RTOS_APP_TO_MODEM_PROC);
+	struct rpc_reply_hdr rpc_rsp;
 
 	rpc_req.gotit = cpu_to_be32(1);
 	rpc_req.cmd = cpu_to_be32(cmd);
 	rpc_req.proc_id = cpu_to_be32(RPC_ADSP_RTOS_PROC_APPS);
 	rpc_req.module = cpu_to_be32(module);
-	rc = msm_rpc_write(adsp_module->rpc_client, &rpc_req, sizeof(rpc_req));
-	if (rc < 0) {
-		pr_err("adsp: could not send RPC request: %d\n", rc);
-		return rc;
-	}
+	rc = msm_rpc_call_reply(adsp_module->rpc_client,
+					RPC_ADSP_RTOS_APP_TO_MODEM_PROC,
+					&rpc_req, sizeof(rpc_req),
+					&rpc_rsp, sizeof(rpc_rsp),
+					5 * HZ);
 
-	rc = msm_rpc_read(adsp_module->rpc_client,
-			  (void **)&rpc_rsp, -1, (5*HZ));
 	if (rc < 0) {
 		pr_err("adsp: error receiving RPC reply: %d (%d)\n",
 		       rc, -ERESTARTSYS);
 		return rc;
 	}
 
-	if (be32_to_cpu(rpc_rsp->reply_stat) != RPCMSG_REPLYSTAT_ACCEPTED) {
+	if (be32_to_cpu(rpc_rsp.reply_stat) != RPCMSG_REPLYSTAT_ACCEPTED) {
 		pr_err("adsp: RPC call was denied!\n");
-		kfree(rpc_rsp);
 		return -EPERM;
 	}
 
-	if (be32_to_cpu(rpc_rsp->data.acc_hdr.accept_stat) !=
+	if (be32_to_cpu(rpc_rsp.data.acc_hdr.accept_stat) !=
 	    RPC_ACCEPTSTAT_SUCCESS) {
 		pr_err("adsp error: RPC call was not successful (%d)\n",
-		       be32_to_cpu(rpc_rsp->data.acc_hdr.accept_stat));
-		kfree(rpc_rsp);
+		       be32_to_cpu(rpc_rsp.data.acc_hdr.accept_stat));
 		return -EINVAL;
 	}
 
-	kfree(rpc_rsp);
 	return 0;
 }
 
@@ -169,15 +180,15 @@ static int get_module_index(uint32_t id)
 static struct msm_adsp_module *find_adsp_module_by_id(
 	struct adsp_info *info, uint32_t id)
 {
+	int mod_idx;
+
 	if (id > info->max_module_id) {
 		return NULL;
 	} else {
-#if CONFIG_MSM_AMSS_VERSION >= 6350
-		id = get_module_index(id);
-		if (id < 0)
+		mod_idx = get_module_index(id);
+		if (mod_idx < 0)
 			return NULL;
-#endif
-		return info->id_to_module[id];
+		return info->id_to_module[mod_idx];
 	}
 }
 
@@ -185,9 +196,10 @@ static struct msm_adsp_module *find_adsp_module_by_name(
 	struct adsp_info *info, const char *name)
 {
 	unsigned n;
-	for (n = 0; n < info->module_count; n++)
+	for (n = 0; n < info->module_count; n++) {
 		if (!strcmp(name, adsp_modules[n].name))
 			return adsp_modules + n;
+	}
 	return NULL;
 }
 
@@ -216,6 +228,7 @@ static void  msm_get_init_info(void)
 {
 	int rc;
 	struct rpc_adsp_rtos_app_to_modem_args_t rpc_req;
+	struct rpc_reply_hdr rpc_rsp;
 
 	adsp_info.init_info_rpc_client = msm_rpc_connect(
 		rpc_adsp_rtos_atom_prog,
@@ -228,18 +241,18 @@ static void  msm_get_init_info(void)
 		return;
 	}
 
-	msm_rpc_setup_req(&rpc_req.hdr,
-			RPC_ADSP_RTOS_ATOM_PROG,
-			msm_rpc_get_vers(adsp_info.init_info_rpc_client),
-			RPC_ADSP_RTOS_APP_TO_MODEM_PROC);
 
 	rpc_req.gotit = cpu_to_be32(1);
 	rpc_req.cmd = cpu_to_be32(RPC_ADSP_RTOS_CMD_GET_INIT_INFO);
 	rpc_req.proc_id = cpu_to_be32(RPC_ADSP_RTOS_PROC_APPS);
 	rpc_req.module = 0;
 
-	rc = msm_rpc_write(adsp_info.init_info_rpc_client,
-				&rpc_req, sizeof(rpc_req));
+	rc = msm_rpc_call_reply(adsp_info.init_info_rpc_client,
+					RPC_ADSP_RTOS_APP_TO_MODEM_PROC,
+					&rpc_req, sizeof(rpc_req),
+					&rpc_rsp, sizeof(rpc_rsp),
+					5 * HZ);
+
 	if (rc < 0)
 		pr_err("adsp: could not send RPC request: %d\n", rc);
 }
@@ -253,8 +266,8 @@ int msm_adsp_get(const char *name, struct msm_adsp_module **out,
 	static uint32_t init_info_cmd_sent;
 
 	if (!init_info_cmd_sent) {
-		msm_get_init_info();
 		init_waitqueue_head(&adsp_info.init_info_wait);
+		msm_get_init_info();
 		rc = wait_event_timeout(adsp_info.init_info_wait,
 			adsp_info.init_info_state == ADSP_STATE_INIT_INFO,
 			5 * HZ);
@@ -317,7 +330,6 @@ done:
 	mutex_unlock(&module->lock);
 	return rc;
 }
-EXPORT_SYMBOL(msm_adsp_get);
 
 static int msm_adsp_disable_locked(struct msm_adsp_module *module);
 
@@ -356,7 +368,6 @@ void msm_adsp_put(struct msm_adsp_module *module)
 	}
 	mutex_unlock(&module->lock);
 }
-EXPORT_SYMBOL(msm_adsp_put);
 
 /* this should be common code with rpc_servers.c */
 static int rpc_send_accepted_void_reply(struct msm_rpc_endpoint *client,
@@ -400,17 +411,22 @@ int __msm_adsp_write(struct msm_adsp_module *module, unsigned dsp_queue_addr,
 			module->name);
 		return -ENODEV;
 	}
-	if (dsp_queue_addr > QDSP_MAX_NUM_QUEUES) {
-		spin_unlock_irqrestore(&adsp_write_lock, flags);
-		pr_info("Invalid Queue Index: %d\n", dsp_queue_addr);
-		return -ENXIO;
-	}
 	if (adsp_validate_module(module->id)) {
 		spin_unlock_irqrestore(&adsp_write_lock, flags);
 		pr_info("adsp: module id validation failed %s  %d\n",
 			module->name, module->id);
 		return -ENXIO;
 	}
+#if defined(CONFIG_ARCH_MSM7227)
+	if (dsp_queue_addr >= QDSP_MAX_NUM_QUEUES) {
+		pr_info("adsp: Invalid Queue Index: %d\n", dsp_queue_addr);
+		return -ENXIO;
+	}
+	if (adsp_validate_queue(module->id, dsp_queue_addr, cmd_size)) {
+		spin_unlock_irqrestore(&adsp_write_lock, flags);
+		return -EINVAL;
+	}
+#endif
 	dsp_q_addr = adsp_get_queue_offset(info, dsp_queue_addr);
 	dsp_q_addr &= ADSP_RTOS_WRITE_CTRL_WORD_DSP_ADDR_M;
 
@@ -422,13 +438,13 @@ int __msm_adsp_write(struct msm_adsp_module *module, unsigned dsp_queue_addr,
 	while (((ctrl_word = readl(info->write_ctrl)) &
 		ADSP_RTOS_WRITE_CTRL_WORD_READY_M) !=
 		ADSP_RTOS_WRITE_CTRL_WORD_READY_V) {
-		if (cnt > 100) {
+		if (cnt > 10) {
 			pr_err("adsp: timeout waiting for DSP write ready\n");
 			ret_status = -EIO;
 			goto fail;
 		}
 		pr_warning("adsp: waiting for DSP write ready\n");
-		udelay(1);
+		udelay(10);
 		cnt++;
 	}
 
@@ -459,12 +475,12 @@ int __msm_adsp_write(struct msm_adsp_module *module, unsigned dsp_queue_addr,
 	while ((readl(info->write_ctrl) &
 		ADSP_RTOS_WRITE_CTRL_WORD_MUTEX_M) ==
 		ADSP_RTOS_WRITE_CTRL_WORD_MUTEX_NAVAIL_V) {
-		if (cnt > 5000) {
+		if (cnt > 5) {
 			pr_err("adsp: timeout waiting for adsp ack\n");
 			ret_status = -EIO;
 			goto fail;
 		}
-		udelay(1);
+		mdelay(1);
 		cnt++;
 	}
 
@@ -472,64 +488,65 @@ int __msm_adsp_write(struct msm_adsp_module *module, unsigned dsp_queue_addr,
 	ctrl_word = readl(info->write_ctrl);
 
 	if ((ctrl_word & ADSP_RTOS_WRITE_CTRL_WORD_STATUS_M) !=
-			 ADSP_RTOS_WRITE_CTRL_WORD_NO_ERR_V) {
+	    ADSP_RTOS_WRITE_CTRL_WORD_NO_ERR_V) {
 		ret_status = -EAGAIN;
+		pr_err("adsp: failed to write queue %x, ctrl_word %x retry\n",
+			dsp_q_addr, ctrl_word);
 		goto fail;
-	}
-
-	/* Ctrl word status bits were 00, no error in the ctrl word */
-
-	/* Get the DSP buffer address */
-	dsp_addr = (ctrl_word & ADSP_RTOS_WRITE_CTRL_WORD_DSP_ADDR_M) +
-		   (uint32_t)MSM_AD5_BASE;
-
-	if (dsp_addr < (uint32_t)(MSM_AD5_BASE + QDSP_RAMC_OFFSET)) {
-		uint16_t *buf_ptr = (uint16_t *) cmd_buf;
-		uint16_t *dsp_addr16 = (uint16_t *)dsp_addr;
-		cmd_size /= sizeof(uint16_t);
-
-		/* Save the command ID */
-		cmd_id = (uint32_t) buf_ptr[0];
-
-		/* Copy the command to DSP memory */
-		cmd_size++;
-		while (--cmd_size)
-			*dsp_addr16++ = *buf_ptr++;
 	} else {
-		uint32_t *buf_ptr = (uint32_t *) cmd_buf;
-		uint32_t *dsp_addr32 = (uint32_t *)dsp_addr;
-		cmd_size /= sizeof(uint32_t);
+		/* No error */
+		/* Get the DSP buffer address */
+		dsp_addr = (ctrl_word & ADSP_RTOS_WRITE_CTRL_WORD_DSP_ADDR_M) +
+			   (uint32_t)MSM_AD5_BASE;
 
-		/* Save the command ID */
-		cmd_id = buf_ptr[0];
+		if (dsp_addr < (uint32_t)(MSM_AD5_BASE + QDSP_RAMC_OFFSET)) {
+			uint16_t *buf_ptr = (uint16_t *) cmd_buf;
+			uint16_t *dsp_addr16 = (uint16_t *)dsp_addr;
+			cmd_size /= sizeof(uint16_t);
 
-		cmd_size++;
-		while (--cmd_size)
-			*dsp_addr32++ = *buf_ptr++;
-	}
+			/* Save the command ID */
+			cmd_id = (uint32_t) buf_ptr[0];
 
-	/* Set the mutex bits */
-	ctrl_word &= ~(ADSP_RTOS_WRITE_CTRL_WORD_MUTEX_M);
-	ctrl_word |=  ADSP_RTOS_WRITE_CTRL_WORD_MUTEX_NAVAIL_V;
+			/* Copy the command to DSP memory */
+			cmd_size++;
+			while (--cmd_size)
+				*dsp_addr16++ = *buf_ptr++;
+		} else {
+			uint32_t *buf_ptr = (uint32_t *) cmd_buf;
+			uint32_t *dsp_addr32 = (uint32_t *)dsp_addr;
+			cmd_size /= sizeof(uint32_t);
 
-	/* Set the command bits to write done */
-	ctrl_word &= ~(ADSP_RTOS_WRITE_CTRL_WORD_CMD_M);
-	ctrl_word |= ADSP_RTOS_WRITE_CTRL_WORD_CMD_WRITE_DONE_V;
+			/* Save the command ID */
+			cmd_id = buf_ptr[0];
 
-	/* Set the queue address bits */
-	ctrl_word &= ~(ADSP_RTOS_WRITE_CTRL_WORD_DSP_ADDR_M);
-	ctrl_word |= dsp_q_addr;
+			cmd_size++;
+			while (--cmd_size)
+				*dsp_addr32++ = *buf_ptr++;
+		}
 
-	writel(ctrl_word, info->write_ctrl);
+		/* Set the mutex bits */
+		ctrl_word &= ~(ADSP_RTOS_WRITE_CTRL_WORD_MUTEX_M);
+		ctrl_word |=  ADSP_RTOS_WRITE_CTRL_WORD_MUTEX_NAVAIL_V;
 
-	/* Generate an interrupt to the DSP.  It does not respond with
-	 * an interrupt, and we do not need to wait for it to
-	 * acknowledge, because it will hold the mutex lock until it's
-	 * ready to receive more commands again.
-	 */
-	writel(1, info->send_irq);
+		/* Set the command bits to write done */
+		ctrl_word &= ~(ADSP_RTOS_WRITE_CTRL_WORD_CMD_M);
+		ctrl_word |= ADSP_RTOS_WRITE_CTRL_WORD_CMD_WRITE_DONE_V;
 
-	module->num_commands++;
+		/* Set the queue address bits */
+		ctrl_word &= ~(ADSP_RTOS_WRITE_CTRL_WORD_DSP_ADDR_M);
+		ctrl_word |= dsp_q_addr;
+
+		writel(ctrl_word, info->write_ctrl);
+
+		/* Generate an interrupt to the DSP.  It does not respond with
+		 * an interrupt, and we do not need to wait for it to
+		 * acknowledge, because it will hold the mutex lock until it's
+		 * ready to receive more commands again.
+		 */
+		writel(1, info->send_irq);
+
+		module->num_commands++;
+	} /* Ctrl word status bits were 00, no error in the ctrl word */
 
 fail:
 	spin_unlock_irqrestore(&adsp_write_lock, flags);
@@ -551,21 +568,14 @@ int msm_adsp_write(struct msm_adsp_module *module, unsigned dsp_queue_addr,
 				module->name, retries, rc);
 	return rc;
 }
-
-static void *modem_event_addr;
-static void read_modem_event(void *buf, size_t size)
+static void *event_addr;
+static void read_event(void *buf, size_t len)
 {
 	uint32_t *dptr = buf;
 	struct rpc_adsp_rtos_modem_to_app_args_t *sptr;
-	struct adsp_rtos_mp_mtoa_type *pkt_ptr;
-	size_t len = size / 4;
+	struct adsp_rtos_mp_mtoa_type	*pkt_ptr;
 
-	if (len < 3) {
-		pr_err("%s: invalid length %d\n", __func__, len);
-		return;
-	}
-
-	sptr = modem_event_addr;
+	sptr = event_addr;
 	pkt_ptr = &sptr->mtoa_pkt.adsp_rtos_mp_mtoa_data.mp_mtoa_packet;
 
 	dptr[0] = be32_to_cpu(sptr->mtoa_pkt.mp_mtoa_header.event);
@@ -580,7 +590,10 @@ static void handle_adsp_rtos_mtoa_app(struct rpc_request_hdr *req)
 		(struct rpc_adsp_rtos_modem_to_app_args_t *)req;
 	uint32_t event;
 	uint32_t proc_id;
+#if defined(CONFIG_ARCH_MSM7227)
+#else
 	uint32_t desc_field;
+#endif
 	uint32_t module_id;
 	uint32_t image;
 	struct msm_adsp_module *module;
@@ -600,12 +613,17 @@ static void handle_adsp_rtos_mtoa_app(struct rpc_request_hdr *req)
 
 	event = be32_to_cpu(args->mtoa_pkt.mp_mtoa_header.event);
 	proc_id = be32_to_cpu(args->mtoa_pkt.mp_mtoa_header.proc_id);
-	module_id = be32_to_cpu(pkt_ptr->module);
-	image = be32_to_cpu(pkt_ptr->image);
+#if defined(CONFIG_ARCH_MSM7227)
+#else
 	desc_field = be32_to_cpu(args->mtoa_pkt.desc_field);
+#endif
 
+
+#if defined(CONFIG_ARCH_MSM7227)
+	if (event == RPC_ADSP_RTOS_INIT_INFO) {
+#else
 	if (desc_field == RPC_ADSP_RTOS_INIT_INFO) {
-
+#endif
 		pr_info("adsp:INIT_INFO Event\n");
 		sptr = &args->mtoa_pkt.adsp_rtos_mp_mtoa_data.
 				mp_mtoa_init_packet;
@@ -622,7 +640,11 @@ static void handle_adsp_rtos_mtoa_app(struct rpc_request_hdr *req)
 				qtbl[e_idx].queue = be32_to_cpu(qptr->queue);
 				q_idx = be32_to_cpu(qptr->queue);
 				iptr->queue_offsets[i_no][q_idx] =
-						qtbl[e_idx].offset;
+							qtbl[e_idx].offset;
+#if 0
+				pr_info("iptr->queue_offsets[%d][%d] = %x\n",
+				i_no, q_idx, iptr->queue_offsets[i_no][q_idx]);
+#endif
 				qptr++;
 			}
 		}
@@ -636,6 +658,9 @@ static void handle_adsp_rtos_mtoa_app(struct rpc_request_hdr *req)
 			for (e_idx = 0; e_idx < entries_per_image; e_idx++) {
 				mtbl[e_idx] = be32_to_cpu(*mptr);
 				mptr++;
+#if 0
+				pr_info("mtbl[%d] = %x\n", e_idx, mtbl[e_idx]);
+#endif
 			}
 		}
 
@@ -643,10 +668,23 @@ static void handle_adsp_rtos_mtoa_app(struct rpc_request_hdr *req)
 		mptr = &sptr->module_entries[0];
 		for (i_no = 0; i_no < iptr->module_table_size; i_no++)
 			iptr->module_entries[i_no] = be32_to_cpu(mptr[i_no]);
+
+#if defined(CONFIG_ARCH_MSM7227)
+		mqptr = &sptr->mod_to_q_tbl[0];
+		mqtbl = &iptr->mod_to_q_tbl[0];
+		iptr->mod_to_q_entries = be32_to_cpu(sptr->mod_to_q_entries);
+		for (e_idx = 0; e_idx < iptr->mod_to_q_entries; e_idx++) {
+			mqtbl[e_idx].module = be32_to_cpu(mqptr->module);
+			mqtbl[e_idx].q_type = be32_to_cpu(mqptr->q_type);
+			mqtbl[e_idx].q_max_len = be32_to_cpu(mqptr->q_max_len);
+			mqptr++;
+		}
+#endif
+
 		adsp_info.init_info_state = ADSP_STATE_INIT_INFO;
+		wake_up(&adsp_info.init_info_wait);
 		rpc_send_accepted_void_reply(rpc_cb_server_client, req->xid,
 						RPC_ACCEPTSTAT_SUCCESS);
-		wake_up(&adsp_info.init_info_wait);
 
 		return;
 	}
@@ -697,15 +735,18 @@ static void handle_adsp_rtos_mtoa_app(struct rpc_request_hdr *req)
 		pr_info("adsp: unknown event %d\n", event);
 		rpc_send_accepted_void_reply(rpc_cb_server_client, req->xid,
 					     RPC_ACCEPTSTAT_GARBAGE_ARGS);
-		mutex_unlock(&module->lock);
-		return;
+		goto done;
 	}
 	rpc_send_accepted_void_reply(rpc_cb_server_client, req->xid,
 				     RPC_ACCEPTSTAT_SUCCESS);
+
+	if (module->ops->modem_event != NULL)
+		module->ops->modem_event(module->driver_data, image);
+done:
 	mutex_unlock(&module->lock);
-	modem_event_addr = (uint32_t *)req;
+	event_addr = (uint32_t *)req;
 	module->ops->event(module->driver_data, EVENT_MSG_ID,
-				EVENT_LEN, read_modem_event);
+				EVENT_LEN, read_event);
 }
 
 static int handle_adsp_rtos_mtoa(struct rpc_request_hdr *req)
@@ -716,7 +757,12 @@ static int handle_adsp_rtos_mtoa(struct rpc_request_hdr *req)
 					     req->xid,
 					     RPC_ACCEPTSTAT_SUCCESS);
 		break;
+#if defined(CONFIG_ARCH_MSM7227)
+	case RPC_ADSP_RTOS_MODEM_TO_APP_INIT_INFO_PROC:
+	case RPC_ADSP_RTOS_MODEM_TO_APP_EVENT_INFO_PROC:
+#else
 	case RPC_ADSP_RTOS_MODEM_TO_APP_PROC:
+#endif
 		handle_adsp_rtos_mtoa_app(req);
 		break;
 	default:
@@ -734,7 +780,7 @@ static int adsp_rpc_thread(void *data)
 {
 	void *buffer;
 	struct rpc_request_hdr *req;
-	int rc;
+	int rc, exit = 0;
 
 	do {
 		rc = msm_rpc_read(rpc_cb_server_client, &buffer, -1, -1);
@@ -767,38 +813,31 @@ static int adsp_rpc_thread(void *data)
 bad_rpc:
 		pr_err("adsp: bogus rpc from modem\n");
 		kfree(buffer);
-	} while (1);
-
+	} while (!exit);
 	do_exit(0);
 }
 
-static size_t read_event_len;
+static size_t read_event_size;
 static void *read_event_addr;
 
-static void read_event_16(void *buf, size_t size)
+static void read_event_16(void *buf, size_t len)
 {
 	uint16_t *dst = buf;
 	uint16_t *src = read_event_addr;
-	size_t len = size / 2;
-	if (len > read_event_len)
-		len = read_event_len;
-	else if (len < read_event_len)
-		pr_warning("%s: event bufer length too small (%d < %d)\n",
-			__func__, len, read_event_len);
+	len /= 2;
+	if (len > read_event_size)
+		len = read_event_size;
 	while (len--)
 		*dst++ = *src++;
 }
 
-static void read_event_32(void *buf, size_t size)
+static void read_event_32(void *buf, size_t len)
 {
 	uint32_t *dst = buf;
 	uint32_t *src = read_event_addr;
-	size_t len = size / 4;
-	if (len > read_event_len)
-		len = read_event_len;
-	else if (len < read_event_len)
-		pr_warning("%s: event bufer length too small (%d < %d)\n",
-			__func__, len, read_event_len);
+	len /= 2;
+	if (len > read_event_size)
+		len = read_event_size;
 	while (len--)
 		*dst++ = *src++;
 }
@@ -817,18 +856,18 @@ static int adsp_rtos_read_ctrl_word_cmd_tast_to_h_v(
 		uint32_t tmp = *dsp_addr32++;
 		rtos_task_id = (tmp & ADSP_RTOS_READ_CTRL_WORD_TASK_ID_M) >> 8;
 		msg_id = (tmp & ADSP_RTOS_READ_CTRL_WORD_MSG_ID_M);
-		read_event_len = tmp >> 16;
+		read_event_size = tmp >> 16;
 		read_event_addr = dsp_addr32;
-		msg_length = read_event_len * sizeof(uint32_t);
+		msg_length = read_event_size * sizeof(uint32_t);
 		func = read_event_32;
 	} else {
 		uint16_t *dsp_addr16 = dsp_addr;
 		uint16_t tmp = *dsp_addr16++;
 		rtos_task_id = (tmp & ADSP_RTOS_READ_CTRL_WORD_TASK_ID_M) >> 8;
 		msg_id = tmp & ADSP_RTOS_READ_CTRL_WORD_MSG_ID_M;
-		read_event_len = *dsp_addr16++;
+		read_event_size = *dsp_addr16++;
 		read_event_addr = dsp_addr16;
-		msg_length = read_event_len * sizeof(uint16_t);
+		msg_length = read_event_size * sizeof(uint16_t);
 		func = read_event_16;
 	}
 
@@ -850,7 +889,6 @@ static int adsp_rtos_read_ctrl_word_cmd_tast_to_h_v(
 		pr_err("adsp: module %s is not open\n", module->name);
 		return 0;
 	}
-
 	module->ops->event(module->driver_data, msg_id, msg_length, func);
 	return 0;
 }
@@ -942,23 +980,15 @@ static irqreturn_t adsp_irq_handler(int irq, void *data)
 {
 	struct adsp_info *info = &adsp_info;
 	int cnt = 0;
-	for (cnt = 0; cnt < 10; cnt++)
+	for (cnt = 0; cnt < 15; cnt++)
 		if (adsp_get_event(info) < 0)
 			break;
 	if (cnt > info->event_backlog_max)
 		info->event_backlog_max = cnt;
 	info->events_received += cnt;
-	if (cnt == 10)
+	if (cnt == 15)
 		pr_err("adsp: too many (%d) events for single irq!\n", cnt);
 	return IRQ_HANDLED;
-}
-
-int adsp_set_clkrate(struct msm_adsp_module *module, unsigned long clk_rate)
-{
-	if (module->clk && clk_rate)
-		return clk_set_rate(module->clk, clk_rate);
-
-	return -EINVAL;
 }
 
 int msm_adsp_enable(struct msm_adsp_module *module)
@@ -1006,7 +1036,6 @@ int msm_adsp_enable(struct msm_adsp_module *module)
 	mutex_unlock(&module->lock);
 	return rc;
 }
-EXPORT_SYMBOL(msm_adsp_enable);
 
 static int msm_adsp_disable_locked(struct msm_adsp_module *module)
 {
@@ -1035,13 +1064,20 @@ int msm_adsp_disable(struct msm_adsp_module *module)
 	mutex_unlock(&module->lock);
 	return rc;
 }
-EXPORT_SYMBOL(msm_adsp_disable);
+
+int msm_adsp_disable_event_rsp(struct msm_adsp_module *module)
+{
+	int rc;
+	pr_info("msm_adsp_disable_event_rsp() '%s'\n", module->name);
+	rc = rpc_adsp_rtos_app_to_modem(RPC_ADSP_RTOS_CMD_DISABLE_EVENT_RSP,
+					module->id, module);
+	return rc;
+}
 
 static int msm_adsp_probe(struct platform_device *pdev)
 {
 	unsigned count;
 	int rc, i;
-	int max_module_id;
 
 	wake_lock_init(&adsp_suspend_lock, WAKE_LOCK_SUSPEND, "adsp");
 	adsp_info.init_info_ptr = kzalloc(
@@ -1052,20 +1088,14 @@ static int msm_adsp_probe(struct platform_device *pdev)
 	rc = adsp_init_info(&adsp_info);
 	if (rc)
 		return rc;
-	adsp_info.send_irq += (uint32_t) MSM_AD5_BASE;
-	adsp_info.read_ctrl += (uint32_t) MSM_AD5_BASE;
-	adsp_info.write_ctrl += (uint32_t) MSM_AD5_BASE;
+	adsp_info.send_irq += MSM_AD5_BASE;
+	adsp_info.read_ctrl += MSM_AD5_BASE;
+	adsp_info.write_ctrl += MSM_AD5_BASE;
 	count = adsp_info.module_count;
 
-#if CONFIG_MSM_AMSS_VERSION >= 6350
-	max_module_id = count;
-#else
-	max_module_id = adsp_info.max_module_id + 1;
-#endif
-
 	adsp_modules = kzalloc(
-		sizeof(struct msm_adsp_module) * count +
-		sizeof(void *) * max_module_id, GFP_KERNEL);
+		(sizeof(struct msm_adsp_module) + sizeof(void *)) *
+		count, GFP_KERNEL);
 	if (!adsp_modules)
 		return -ENOMEM;
 
@@ -1140,7 +1170,7 @@ fail_request_irq:
 static struct platform_driver msm_adsp_driver = {
 	.probe = msm_adsp_probe,
 	.driver = {
-		.name = MSM_ADSP_DRIVER_NAME,
+		.name = ADSP_DRIVER_NAME,
 		.owner = THIS_MODULE,
 	},
 };

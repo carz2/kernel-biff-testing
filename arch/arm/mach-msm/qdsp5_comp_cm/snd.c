@@ -20,12 +20,10 @@
 #include <linux/uaccess.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
-//#include <linux/msm_audio.h>
 #include <linux/slab.h>
 
 #include <asm/atomic.h>
 #include <asm/ioctls.h>
-#include <mach/board.h>
 #include <mach/msm_rpcrouter.h>
 #include <mach/msm_rpc_version.h>
 
